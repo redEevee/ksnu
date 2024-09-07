@@ -1,0 +1,88 @@
+### Flask Code ###
+
+from flask import Flask, request, render_template, redirect, url_for
+import boto3
+import os
+import librosa
+import numpy as np
+
+app = Flask(__name__)
+
+# AWS S3 설정
+s3 = boto3.client('s3')
+BUCKET_NAME = 'your-s3-bucket-name'  # S3 버킷 이름을 입력하세요
+
+# 파일 업로드 페이지
+@app.route('/')
+def upload_file():
+    return '''
+   <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fake or Real Voice Detection</title>
+</head>
+<body>
+    <h2>Upload your voice file</h2>
+    <form id="uploadForm" enctype="multipart/form-data">
+        <input type="file" id="audioFile" name="audioFile" accept="audio/*" required>
+        <input type="submit" value="Upload">
+    </form>
+    <div id="result"></div>
+
+    <script>
+        document.getElementById('uploadForm').onsubmit = async function(event) {
+            event.preventDefault();
+
+            const fileInput = document.getElementById('audioFile');
+            const formData = new FormData();
+            formData.append('audioFile', fileInput.files[0]);
+
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            const result = await response.json();
+            document.getElementById('result').textContent = `Prediction: ${result.label}`;
+        };
+    </script>
+</body>
+</html>
+    '''
+
+# 파일 업로드 처리 및 S3에 저장
+@app.route('/upload', methods=['POST'])
+def upload_to_s3():
+    if 'file' not in request.files:
+        return "No file part"
+    file = request.files['file']
+    if file.filename == '':
+        return "No selected file"
+    
+    # 파일 S3에 업로드
+    s3.upload_fileobj(file, BUCKET_NAME, file.filename)
+
+    # 업로드된 파일을 분석하는 경로로 리디렉션
+    return redirect(url_for('analyze_file', filename=file.filename))
+
+# S3에서 파일 다운로드 및 분석
+@app.route('/analyze/<filename>')
+def analyze_file(filename):
+    # 로컬에 파일 다운로드
+    local_path = f'/tmp/{filename}'
+    s3.download_file(BUCKET_NAME, filename, local_path)
+
+    # 오디오 파일 분석 (예: MFCC 특징 추출)
+    y, sr = librosa.load(local_path, sr=None)
+    mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    mfcc_mean = np.mean(mfccs.T, axis=0)
+
+    # 진짜인지 가짜인지 예측 (여기서는 간단히 MFCC 평균값 출력)
+    prediction = "Real" if np.mean(mfcc_mean) > 0 else "Fake"
+
+    return f"File {filename} is predicted to be: {prediction}"
+
+if __name__ == "__main__":
+    app.run(port=80)
